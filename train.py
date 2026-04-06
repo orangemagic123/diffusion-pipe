@@ -868,11 +868,13 @@ if __name__ == '__main__':
         x_axis = examples if config['x_axis_examples'] else step
 
         if is_main_process() and step % config['logging_steps'] == 0:
+            current_lr = lr_scheduler.get_last_lr()[0]
             tb_writer.add_scalar(f'train/loss', loss, x_axis)
+            tb_writer.add_scalar(f'train/learning_rate', current_lr, x_axis)
             if hasattr(optimizer, '_grad_norm'):
                 tb_writer.add_scalar(f'train/grad_norm', optimizer._grad_norm, x_axis)
             if wandb_enable:
-                wandb.log({'train/loss': loss, 'step': x_axis})
+                wandb.log({'train/loss': loss, 'train/learning_rate': current_lr, 'step': x_axis})
                 if hasattr(optimizer, '_grad_norm'):
                     wandb.log({'train/grad_norm': optimizer._grad_norm, 'step': x_axis})
             if optimizer.__class__.__name__ == 'Prodigy':
