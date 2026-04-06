@@ -849,7 +849,12 @@ if __name__ == '__main__':
     epoch_loss = 0
     num_steps = 0
     empty_cuda_cache()
+
+    # Determine effective total steps for progress display
+    effective_total_steps = config['max_steps'] if 'max_steps' in config else total_steps
+    step_times = []
     while True:
+        step_start_time = time.time()
         model_engine.reset_activation_shape()
         iterator = get_data_iterator_for_step(train_dataloader, model_engine)
         loss = model_engine.train_batch(iterator).item()
@@ -878,6 +883,21 @@ if __name__ == '__main__':
                 if avg_lr > 0:
                     tb_writer.add_histogram(f'train/automagic_lrs', lrs, x_axis)
                     tb_writer.add_scalar(f'train/automagic_avg_lr', avg_lr, x_axis)
+
+        # Display training progress
+        step_elapsed = time.time() - step_start_time
+        step_times.append(step_elapsed)
+        if len(step_times) > 100:
+            step_times = step_times[-100:]
+        if is_main_process():
+            avg_step_time = sum(step_times) / len(step_times)
+            steps_per_sec = 1.0 / avg_step_time if avg_step_time > 0 else 0
+            remaining_steps = effective_total_steps - step
+            eta_seconds = remaining_steps * avg_step_time
+            eta_h = int(eta_seconds // 3600)
+            eta_m = int((eta_seconds % 3600) // 60)
+            eta_s = int(eta_seconds % 60)
+            print(f'Step {step}/{effective_total_steps} | Loss: {loss:.4f} | Speed: {steps_per_sec:.2f} steps/s | ETA: {eta_h:02d}:{eta_m:02d}:{eta_s:02d}')
 
         if (config['eval_every_n_steps'] and step % config['eval_every_n_steps'] == 0) or (finished_epoch and config['eval_every_n_epochs'] and epoch % config['eval_every_n_epochs'] == 0):
             evaluate(model, model_engine, eval_dataloaders, tb_writer, x_axis, config['eval_gradient_accumulation_steps'], disable_block_swap_for_eval)
