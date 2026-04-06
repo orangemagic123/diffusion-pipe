@@ -890,13 +890,13 @@ if __name__ == '__main__':
             epoch_loss = 0
             num_steps = 0
             if new_epoch is None:
-                final_model_name = f'epoch{epoch}'
+                final_model_name = saver._make_final_save_name(f'epoch{epoch}')
                 break
             epoch = new_epoch
 
         checkpointed, saved = saver.process_step(step, examples)
         if 'max_steps' in config and step >= config['max_steps']:
-            final_model_name = f'step{step}'
+            final_model_name = saver._make_final_save_name(f'step{step}')
             break
         step += 1
         examples += global_batch_size

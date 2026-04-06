@@ -55,6 +55,14 @@ class Saver:
         self.model_engine = model_engine
         self.pipeline_model = pipeline_model
 
+    def _rename_safetensors(self, save_dir, name):
+        """Rename the .safetensors file in save_dir to {name}.safetensors if output_name is configured."""
+        if 'output_name' not in self.config:
+            return
+        for sf in save_dir.glob('*.safetensors'):
+            sf.rename(save_dir / f'{name}.safetensors')
+            break
+
     def save_adapter(self, name):
         dp_id = self.model_engine.grid.get_data_parallel_rank()
         stage_id = self.model_engine.grid.get_pipe_parallel_rank()
@@ -81,6 +89,7 @@ class Saver:
             for path in tmp_dir.glob('*.bin'):
                 state_dict.update(torch.load(path, weights_only=True, map_location='cpu'))
             self.model.save_adapter(save_dir, state_dict)
+            self._rename_safetensors(save_dir, save_dir.name)
             shutil.copy(self.args.config, save_dir)
             shutil.rmtree(tmp_dir)
 
@@ -104,6 +113,7 @@ class Saver:
             for path in tmp_dir.glob('*.bin'):
                 state_dict.update(torch.load(path, map_location='cpu', weights_only=True))
             self.model.save_model(save_dir, state_dict)
+            self._rename_safetensors(save_dir, save_dir.name)
             shutil.copy(self.args.config, save_dir)
             shutil.rmtree(tmp_dir)
 
@@ -127,6 +137,20 @@ class Saver:
             exclude_frozen_parameters=True
         )
 
+    def _make_save_name(self, default_name, number):
+        """Build the save name. Uses output_name-{number:06d} if configured, otherwise default_name."""
+        output_name = self.config.get('output_name')
+        if output_name:
+            return f'{output_name}-{number:06d}'
+        return default_name
+
+    def _make_final_save_name(self, default_name):
+        """Build the final model save name. Uses output_name if configured, otherwise default_name."""
+        output_name = self.config.get('output_name')
+        if output_name:
+            return output_name
+        return default_name
+
     def process_epoch(self, epoch, step, examples):
         checkpointed, saved = False, False
         if self.train_dataloader.epoch != epoch:
@@ -134,7 +158,7 @@ class Saver:
                 self.save_checkpoint(step, examples)
                 checkpointed = True
             if 'save_every_n_epochs' in self.config and epoch % self.config['save_every_n_epochs'] == 0:
-                self.save_model(f'epoch{epoch}')
+                self.save_model(self._make_save_name(f'epoch{epoch}', epoch))
                 saved = True
             epoch = self.train_dataloader.epoch
             if epoch > self.config['epochs']:
@@ -163,7 +187,7 @@ class Saver:
                 os.remove(save_quit_signal_file)
 
         if 'save_every_n_steps' in self.config and step % self.config['save_every_n_steps'] == 0:
-            self.save_model(f'step{step}')
+            self.save_model(self._make_save_name(f'step{step}', step))
             saved = True
 
         if need_to_checkpoint(self.config) or should_manually_save:
