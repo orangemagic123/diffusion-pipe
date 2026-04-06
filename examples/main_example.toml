@@ -117,6 +117,13 @@ video_clip_mode = 'single_beginning'
 # By default, the loss graphs in Tensorboard / WandB have step as the x-axis. You can change it to number of examples seen instead.
 #x_axis_examples = true
 
+# Caption debug logging. Prints current training captions every N steps. 0 means disabled. Defaults to 0.
+# Also shows tag_dropout (which tags were dropped) and caption_dropout events.
+# Requires --regenerate_cache for dropout details to be available.
+#log_captions_every_n_steps = 100
+# Maximum number of tags to display per caption in debug output. Defaults to 20.
+#log_captions_max_length = 20
+
 # This is how you configure HunyuanVideo. Other models will be different. See docs/supported_models.md for
 # details on the configuration and options for each model.
 [model]
