@@ -867,6 +867,22 @@ class DirectoryDataset:
                 with open(nl_caption_file) as f:
                     nl_caption = f.read().strip()
                 prefix = self.directory_config['caption_prefix']
+
+                # Extract fixed parts (before keep_tokens_separator) and variable-only captions
+                # so that the fixed part can be prepended to all caption types.
+                fixed_parts = []
+                variable_captions = []
+                for cap in captions:
+                    if self.keep_tokens_separator and self.keep_tokens_separator in cap:
+                        parts = cap.split(self.keep_tokens_separator, 1)
+                        fixed_parts.append(parts[0].strip())
+                        variable_captions.append(parts[1].strip())
+                    else:
+                        fixed_parts.append('')
+                        variable_captions.append(cap)
+                # Use first caption's fixed part (typically one tag caption per image)
+                fixed_part = fixed_parts[0] if fixed_parts else ''
+
                 mixed_captions = []
                 for mode, count in self.mixed_weights_reduced.items():
                     for _ in range(count):
@@ -882,8 +898,11 @@ class DirectoryDataset:
                             mixed_captions.extend(shuffled)
                             all_dropped_tags.extend(dropped)
                         elif mode == 'nl':
-                            # Natural language only - no shuffle/dropout
-                            mixed_captions.append(prefix + nl_caption)
+                            # Natural language with fixed part prepended
+                            if fixed_part:
+                                mixed_captions.append(prefix + fixed_part + self.shuffle_delimiter + nl_caption)
+                            else:
+                                mixed_captions.append(prefix + nl_caption)
                             all_dropped_tags.append([])
                         elif mode == 'tags_nl':
                             # Tags first, then natural language
@@ -896,14 +915,20 @@ class DirectoryDataset:
                                 mixed_captions.append(s + self.shuffle_delimiter + nl_caption)
                             all_dropped_tags.extend(dropped)
                         elif mode == 'nl_tags':
-                            # Natural language first, then tags
+                            # Fixed part first, then natural language, then variable tags
                             shuffled, dropped = shuffle_captions(
-                                captions, min(self.shuffle, 1), self.shuffle_delimiter, '',
-                                self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
+                                variable_captions, min(self.shuffle, 1), self.shuffle_delimiter, '',
+                                '', self.secondary_separator, self.tag_dropout_rate,
                                 self.protected_tags, return_dropped_tags=True,
                             )
                             for s in shuffled:
-                                mixed_captions.append(prefix + nl_caption + self.shuffle_delimiter + s)
+                                parts = []
+                                if fixed_part:
+                                    parts.append(fixed_part)
+                                parts.append(nl_caption)
+                                if s:
+                                    parts.append(s)
+                                mixed_captions.append(prefix + self.shuffle_delimiter.join(parts))
                             all_dropped_tags.extend(dropped)
                 captions = mixed_captions
             else:
