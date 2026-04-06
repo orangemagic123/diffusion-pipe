@@ -43,6 +43,9 @@ frame_buckets = [1, 33]
 # "tag1, tag2, tag3" has ", " as delimiter and will possibly be shuffled like "tag3, tag1, tag2". "tag1;tag2;tag3" has ";" as delimiter and will possibly be shuffled like "tag2;tag1;tag3".
 # cache_shuffle_delimiter = ", "
 
+# Caption dropout rate. Probability of replacing the entire caption with an empty string during caching. 0.0 means no dropout. Defaults to 0.0.
+# caption_dropout_rate = 0.05
+
 # Tag dropout rate. Probability of dropping each tag (or tag group) during caching. 0.0 means no dropout. Defaults to 0.0.
 # tag_dropout_rate = 0.1
 
