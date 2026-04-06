@@ -56,6 +56,22 @@ frame_buckets = [1, 33]
 # Example: "a, b;;;c;;;d, e, f" -> "b", "c", "d" form a group. Shuffle result might be: "a, e, b, c, d, f"
 # secondary_separator = ";;;"
 
+# Mixed caption mode: combine tag-based captions (.txt) and natural language captions (_nl.txt) for each image.
+# For an image abc.jpg, place abc.txt (tags) and abc_nl.txt (natural language) in the same directory.
+# caption_mode = "mixed"
+# mixed_weights controls the probability of each caption combination style:
+#   tags    = tags only
+#   nl      = natural language only
+#   tags_nl = tags followed by natural language
+#   nl_tags = natural language followed by tags
+# The probability of each style is its weight divided by the sum of all weights.
+# Example: tags_nl has probability 20/(10+5+20+10) = 44.4%
+# [mixed_weights]
+# tags = 10
+# nl = 5
+# tags_nl = 20
+# nl_tags = 10
+
 [[directory]]
 # Path to directory of images/videos, and corresponding caption files. The caption files should match the media file name, but with a .txt extension.
 # A missing caption file will log a warning, but then just train using an empty caption.

@@ -503,6 +503,21 @@ class DirectoryDataset:
         self.keep_tokens_separator = directory_config.get('keep_tokens_separator', dataset_config.get('keep_tokens_separator', ''))
         self.secondary_separator = directory_config.get('secondary_separator', dataset_config.get('secondary_separator', ''))
         self.tag_dropout_rate = directory_config.get('tag_dropout_rate', dataset_config.get('tag_dropout_rate', 0.0))
+        self.caption_mode = directory_config.get('caption_mode', None)
+        self.mixed_weights = directory_config.get('mixed_weights', None)
+        if self.caption_mode == 'mixed':
+            if self.mixed_weights is None:
+                self.mixed_weights = {'tags': 1, 'nl': 1, 'tags_nl': 1, 'nl_tags': 1}
+            valid_keys = {'tags', 'nl', 'tags_nl', 'nl_tags'}
+            for key in self.mixed_weights:
+                assert key in valid_keys, f'Invalid mixed_weights key: {key}. Valid keys: {valid_keys}'
+            # Normalize: reduce by GCD so we create fewer caption copies
+            from math import gcd
+            from functools import reduce
+            weights = {k: int(v) for k, v in self.mixed_weights.items() if int(v) > 0}
+            assert len(weights) > 0, 'mixed_weights must have at least one positive weight'
+            g = reduce(gcd, weights.values())
+            self.mixed_weights_reduced = {k: v // g for k, v in weights.items()}
         self.path = Path(self.directory_config['path'])
         self.mask_path = Path(self.directory_config['mask_path']) if 'mask_path' in self.directory_config else None
         self.control_path = Path(self.directory_config['control_path']) if 'control_path' in self.directory_config else None
@@ -661,6 +676,7 @@ class DirectoryDataset:
 
             image_specs = []
             caption_files = []
+            nl_caption_files = []
             mask_files = []
             control_files = []
             for file in tqdm(files):
@@ -671,8 +687,13 @@ class DirectoryDataset:
                     caption_file = image_file.with_suffix('.txt')
                     if has_captions_json or not os.path.exists(caption_file):
                         caption_file = ''
+                    # Natural language caption file (e.g. abc_nl.txt for abc.jpg)
+                    nl_caption_file = image_file.parent / (image_file.stem + '_nl.txt')
+                    if not os.path.exists(nl_caption_file):
+                        nl_caption_file = ''
                     image_specs.append(image_spec)
                     caption_files.append(str(caption_file))
+                    nl_caption_files.append(str(nl_caption_file))
                     # mask
                     if image_file.stem in mask_file_stems:
                         mask_files.append(str(mask_file_stems[image_file.stem]))
@@ -689,7 +710,7 @@ class DirectoryDataset:
                         control_files.append(str(control_file_stems[image_file.stem]))
             assert len(image_specs) > 0, f'Directory {self.path} had no images/videos!'
 
-            d = {'image_spec': image_specs, 'caption_file': caption_files, 'mask_file': mask_files}
+            d = {'image_spec': image_specs, 'caption_file': caption_files, 'nl_caption_file': nl_caption_files, 'mask_file': mask_files}
             if self.control_path:
                 d['control_file'] = control_files
             metadata_dataset = datasets.Dataset.from_dict(d)
@@ -749,6 +770,8 @@ class DirectoryDataset:
         directory_config.setdefault('shuffle_tags', dataset_config.get('shuffle_tags', False))
         directory_config.setdefault('caption_prefix', dataset_config.get('caption_prefix', ''))
         directory_config.setdefault('num_repeats', dataset_config.get('num_repeats', 1))
+        directory_config.setdefault('caption_mode', dataset_config.get('caption_mode', None))
+        directory_config.setdefault('mixed_weights', dataset_config.get('mixed_weights', None))
 
     def _metadata_map_fn(self):
         tarfile_map = {}
@@ -756,6 +779,7 @@ class DirectoryDataset:
         def fn(example):
             # batch size always 1
             caption_file = example['caption_file'][0]
+            nl_caption_file = example.get('nl_caption_file', [''])[0]
             image_spec = example['image_spec'][0]
             image_file = Path(image_spec[1])
             captions = None
@@ -770,10 +794,50 @@ class DirectoryDataset:
                 logger.warning(f'Cound not find caption for {image_file}. Using empty caption.')
             if self.directory_config['shuffle_tags'] and self.shuffle == 0: # backwards compatibility
                 self.shuffle = 1
-            captions = shuffle_captions(
-                captions, self.shuffle, self.shuffle_delimiter, self.directory_config['caption_prefix'],
-                self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
-            )
+
+            if self.caption_mode == 'mixed' and not nl_caption_file:
+                logger.warning(f'caption_mode is "mixed" but no _nl.txt file found for {image_file}. Falling back to tags only.')
+            if self.caption_mode == 'mixed' and nl_caption_file:
+                # Mixed caption mode: combine tag captions and natural language captions
+                # with weighted probabilities.
+                with open(nl_caption_file) as f:
+                    nl_caption = f.read().strip()
+                prefix = self.directory_config['caption_prefix']
+                mixed_captions = []
+                for mode, count in self.mixed_weights_reduced.items():
+                    for _ in range(count):
+                        if mode == 'tags':
+                            # Tags only - apply shuffle/dropout to tags
+                            shuffled = shuffle_captions(
+                                captions, self.shuffle, self.shuffle_delimiter, prefix,
+                                self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
+                            )
+                            mixed_captions.extend(shuffled)
+                        elif mode == 'nl':
+                            # Natural language only
+                            mixed_captions.append(prefix + nl_caption)
+                        elif mode == 'tags_nl':
+                            # Tags first, then natural language
+                            shuffled = shuffle_captions(
+                                captions, self.shuffle, self.shuffle_delimiter, prefix,
+                                self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
+                            )
+                            for s in shuffled:
+                                mixed_captions.append(s + self.shuffle_delimiter + nl_caption)
+                        elif mode == 'nl_tags':
+                            # Natural language first, then tags
+                            shuffled = shuffle_captions(
+                                captions, self.shuffle, self.shuffle_delimiter, '',
+                                self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
+                            )
+                            for s in shuffled:
+                                mixed_captions.append(prefix + nl_caption + self.shuffle_delimiter + s)
+                captions = mixed_captions
+            else:
+                captions = shuffle_captions(
+                    captions, self.shuffle, self.shuffle_delimiter, self.directory_config['caption_prefix'],
+                    self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
+                )
             empty_return = {'image_spec': [], 'mask_file': [], 'caption': [], 'ar_bucket': [], 'size_bucket': [], 'is_video': []}
             if self.control_path:
                 empty_return['control_file'] = []
