@@ -88,6 +88,9 @@ partition_method = 'parameters'
 # Length of partition_split must be pipeline_stages-1.
 #partition_split = [N]
 
+# Custom name for saved model files. If set, the final model will be saved as '{output_name}.safetensors'
+# and intermediate saves will be '{output_name}-000010.safetensors', etc.
+#output_name = 'my_lora'
 # dtype for saving the LoRA or model, if different from training dtype
 save_dtype = 'bfloat16'
 # Batch size for caching latents and text embeddings. Increasing can lead to higher GPU utilization during caching phase but uses more memory.
