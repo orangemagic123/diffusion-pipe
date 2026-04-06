@@ -53,11 +53,15 @@ def shuffle_captions(
     secondary_separator: str = '',
     tag_dropout_rate: float = 0.0,
     protected_tags: set = None,
+    return_dropped_tags: bool = False,
 ) -> list[str]:
     if count == 0 and tag_dropout_rate <= 0:
-        return [caption_prefix + c for c in captions]
+        result = [caption_prefix + c for c in captions]
+        if return_dropped_tags:
+            return result, [[] for _ in result]
+        return result
 
-    def process_caption(caption: str) -> str:
+    def process_caption(caption: str):
         # 1. Split by keep_tokens_separator into fixed and variable parts
         fixed_part = ''
         variable_part = caption
@@ -84,12 +88,15 @@ def shuffle_captions(
 
         # 4. Tag dropout - drop entire groups with probability tag_dropout_rate
         #    Groups containing any protected tag are immune to dropout.
+        dropped_tags = []
         if tag_dropout_rate > 0:
-            tag_groups = [
-                g for g in tag_groups
-                if (protected_tags and any(t in protected_tags for t in g))
-                or random.random() >= tag_dropout_rate
-            ]
+            kept_groups = []
+            for g in tag_groups:
+                if (protected_tags and any(t in protected_tags for t in g)) or random.random() >= tag_dropout_rate:
+                    kept_groups.append(g)
+                else:
+                    dropped_tags.extend(g)
+            tag_groups = kept_groups
 
         # 5. Shuffle tag groups
         if count > 0:
@@ -106,10 +113,20 @@ def shuffle_captions(
             all_tags.append(fixed_part)
         if shuffled_tags:
             all_tags.append(delimiter.join(shuffled_tags))
-        return delimiter.join(all_tags)
+        return delimiter.join(all_tags), dropped_tags
 
     effective_count = max(count, 1)
-    return [caption_prefix + process_caption(caption) for caption in captions for _ in range(effective_count)]
+    results = []
+    all_dropped = []
+    for caption in captions:
+        for _ in range(effective_count):
+            processed, dropped = process_caption(caption)
+            results.append(caption_prefix + processed)
+            all_dropped.append(dropped)
+
+    if return_dropped_tags:
+        return results, all_dropped
+    return results
 
 
 def bucket_suffix(key):
@@ -298,6 +315,11 @@ class SizeBucketDataset:
                 for i, image_spec in enumerate(self.metadata_dataset['image_spec'])
             }
 
+            has_debug = 'original_caption' in self.metadata_dataset.column_names
+            select_columns = ['image_spec', 'caption']
+            if has_debug:
+                select_columns.extend(['original_caption', 'dropped_tags', 'caption_dropout'])
+
             equal_num_captions = True
             num_captions = None
             for example in self.metadata_dataset.select_columns(['caption']):
@@ -311,33 +333,53 @@ class SizeBucketDataset:
                 # If all images have the same number of captions, set things up so we read (mostly) sequentially off disk. The metadata was already shuffled in the beginning.
                 iteration_order_by_caption_num = [[] for _ in range(num_captions)]
                 seed = 0
-                for example in self.metadata_dataset.select_columns(['image_spec', 'caption']):
+                for example in self.metadata_dataset.select_columns(select_columns):
                     image_spec = example['image_spec']
                     captions = example['caption']
                     shuffle_with_seed(captions, seed)
                     seed += 1
                     latents_idx = image_spec_to_latents_idx[tuple(image_spec)]
+                    if has_debug:
+                        original_caption = example['original_caption']
+                        dropped_tags_list = example['dropped_tags']
+                        caption_dropout = example['caption_dropout']
                     for i, caption in enumerate(captions):
-                        iteration_order_by_caption_num[i].append((image_spec, latents_idx, caption, i))
+                        entry = [image_spec, latents_idx, caption, i]
+                        if has_debug:
+                            dropped_tags = dropped_tags_list[i] if i < len(dropped_tags_list) else ''
+                            entry.extend([original_caption, dropped_tags, caption_dropout])
+                        iteration_order_by_caption_num[i].append(tuple(entry))
                 iteration_order_list = []
                 for l in iteration_order_by_caption_num:
                     iteration_order_list.extend(l)
             else:
                 iteration_order_list = []
-                for example in self.metadata_dataset.select_columns(['image_spec', 'caption']):
+                for example in self.metadata_dataset.select_columns(select_columns):
                     image_spec = example['image_spec']
                     captions = example['caption']
                     latents_idx = image_spec_to_latents_idx[tuple(image_spec)]
+                    if has_debug:
+                        original_caption = example['original_caption']
+                        dropped_tags_list = example['dropped_tags']
+                        caption_dropout = example['caption_dropout']
                     for i, caption in enumerate(captions):
-                        iteration_order_list.append((image_spec, latents_idx, caption, i))
+                        entry = [image_spec, latents_idx, caption, i]
+                        if has_debug:
+                            dropped_tags = dropped_tags_list[i] if i < len(dropped_tags_list) else ''
+                            entry.extend([original_caption, dropped_tags, caption_dropout])
+                        iteration_order_list.append(tuple(entry))
                 shuffle_with_seed(iteration_order_list, 42)
 
             iteration_order_dict = defaultdict(list)
-            for image_spec, latents_idx, caption, caption_number in iteration_order_list:
-                iteration_order_dict['image_spec'].append(image_spec)
-                iteration_order_dict['latents_idx'].append(latents_idx)
-                iteration_order_dict['caption'].append(caption)
-                iteration_order_dict['caption_number'].append(caption_number)
+            for entry in iteration_order_list:
+                iteration_order_dict['image_spec'].append(entry[0])
+                iteration_order_dict['latents_idx'].append(entry[1])
+                iteration_order_dict['caption'].append(entry[2])
+                iteration_order_dict['caption_number'].append(entry[3])
+                if has_debug:
+                    iteration_order_dict['original_caption'].append(entry[4])
+                    iteration_order_dict['dropped_tags'].append(entry[5])
+                    iteration_order_dict['caption_dropout'].append(entry[6])
             iteration_order = datasets.Dataset.from_dict(iteration_order_dict)
             iteration_order.save_to_disk(str(iteration_order_cache_dir))
             del iteration_order
@@ -365,6 +407,10 @@ class SizeBucketDataset:
             emb_dict = uncond_ds[0] if use_uncond else ds.get_text_embeddings(tuple(entry['image_spec']), entry['caption_number'])
             ret.update(emb_dict)
         ret['caption'] = caption
+        if 'original_caption' in entry:
+            ret['original_caption'] = entry['original_caption']
+            ret['dropped_tags'] = entry['dropped_tags']
+            ret['caption_dropout'] = entry['caption_dropout']
         return ret
 
     def __len__(self):
@@ -809,8 +855,12 @@ class DirectoryDataset:
             if self.directory_config['shuffle_tags'] and self.shuffle == 0: # backwards compatibility
                 self.shuffle = 1
 
+            # Save original caption for debug logging
+            original_caption = captions[0] if captions else ''
+
             if self.caption_mode == 'mixed' and not nl_caption_file:
                 logger.warning(f'caption_mode is "mixed" but no _nl.txt file found for {image_file}. Falling back to tags only.')
+            all_dropped_tags = []
             if self.caption_mode == 'mixed' and nl_caption_file:
                 # Mixed caption mode: combine tag captions and natural language captions
                 # with weighted probabilities.
@@ -824,45 +874,57 @@ class DirectoryDataset:
                             # Tags only - apply shuffle/dropout to tags
                             # Use count=1 to produce exactly one variant per weight iteration,
                             # preserving the mixed_weights ratio.
-                            shuffled = shuffle_captions(
+                            shuffled, dropped = shuffle_captions(
                                 captions, min(self.shuffle, 1), self.shuffle_delimiter, prefix,
                                 self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
-                                self.protected_tags,
+                                self.protected_tags, return_dropped_tags=True,
                             )
                             mixed_captions.extend(shuffled)
+                            all_dropped_tags.extend(dropped)
                         elif mode == 'nl':
                             # Natural language only - no shuffle/dropout
                             mixed_captions.append(prefix + nl_caption)
+                            all_dropped_tags.append([])
                         elif mode == 'tags_nl':
                             # Tags first, then natural language
-                            shuffled = shuffle_captions(
+                            shuffled, dropped = shuffle_captions(
                                 captions, min(self.shuffle, 1), self.shuffle_delimiter, prefix,
                                 self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
-                                self.protected_tags,
+                                self.protected_tags, return_dropped_tags=True,
                             )
                             for s in shuffled:
                                 mixed_captions.append(s + self.shuffle_delimiter + nl_caption)
+                            all_dropped_tags.extend(dropped)
                         elif mode == 'nl_tags':
                             # Natural language first, then tags
-                            shuffled = shuffle_captions(
+                            shuffled, dropped = shuffle_captions(
                                 captions, min(self.shuffle, 1), self.shuffle_delimiter, '',
                                 self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
-                                self.protected_tags,
+                                self.protected_tags, return_dropped_tags=True,
                             )
                             for s in shuffled:
                                 mixed_captions.append(prefix + nl_caption + self.shuffle_delimiter + s)
+                            all_dropped_tags.extend(dropped)
                 captions = mixed_captions
             else:
-                captions = shuffle_captions(
+                captions, all_dropped_tags = shuffle_captions(
                     captions, self.shuffle, self.shuffle_delimiter, self.directory_config['caption_prefix'],
                     self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
-                    self.protected_tags,
+                    self.protected_tags, return_dropped_tags=True,
                 )
             # Caption dropout: replace entire caption with empty string with given probability
+            caption_dropout_occurred = False
             if self.caption_dropout_rate > 0 and random.random() < self.caption_dropout_rate:
                 captions = ['']
+                caption_dropout_occurred = True
 
-            empty_return = {'image_spec': [], 'mask_file': [], 'caption': [], 'ar_bucket': [], 'size_bucket': [], 'is_video': []}
+            # Convert dropped tags lists to comma-separated strings for storage
+            dropped_tags_strings = [', '.join(tags) for tags in all_dropped_tags]
+            if caption_dropout_occurred:
+                dropped_tags_strings = ['']
+
+            empty_return = {'image_spec': [], 'mask_file': [], 'caption': [], 'ar_bucket': [], 'size_bucket': [], 'is_video': [],
+                            'original_caption': [], 'dropped_tags': [], 'caption_dropout': []}
             if self.control_path:
                 empty_return['control_file'] = []
 
@@ -930,6 +992,9 @@ class DirectoryDataset:
                 'ar_bucket': [ar_bucket],
                 'size_bucket': [size_bucket],
                 'is_video': [is_video],
+                'original_caption': [original_caption],
+                'dropped_tags': [dropped_tags_strings],
+                'caption_dropout': [caption_dropout_occurred],
             }
             if self.control_path:
                 ret['control_file'] = [example['control_file'][0]]
@@ -1405,6 +1470,7 @@ class PipelineDataLoader:
         self.num_batches_pulled = 0
         self.next_micro_batch = None
         self.recreate_dataloader = False
+        self.last_caption_info = None
         # Be careful to only create the DataLoader some bounded number of times: https://github.com/pytorch/pytorch/issues/91252
         self._create_dataloader()
         self.data = self._pull_batches_from_dataloader()
@@ -1458,6 +1524,14 @@ class PipelineDataLoader:
 
     def _pull_batches_from_dataloader(self):
         for batch in self.dataloader:
+            # Save caption debug info before prepare_inputs strips non-tensor fields
+            if 'caption' in batch:
+                self.last_caption_info = {
+                    'caption': batch['caption'],
+                    'original_caption': batch.get('original_caption'),
+                    'dropped_tags': batch.get('dropped_tags'),
+                    'caption_dropout': batch.get('caption_dropout'),
+                }
             features, label = self.model.prepare_inputs(batch, timestep_quantile=self.eval_quantile)
             target, mask = label
             # The target depends on the noise, so we must broadcast it from the first stage to the last.

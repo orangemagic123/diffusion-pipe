@@ -138,6 +138,8 @@ def set_config_defaults(config):
     config.setdefault('eval_before_first_step', True)
     config.setdefault('compile', False)
     config.setdefault('x_axis_examples', False)
+    config.setdefault('log_captions_every_n_steps', 0)
+    config.setdefault('log_captions_max_length', 20)
 
 
 def get_most_recent_run_dir(output_dir):
@@ -156,6 +158,49 @@ def print_model_info(model):
             print(p.device)
             print(p.requires_grad)
             print()
+
+
+def log_caption_debug(caption_info, step, max_tags, delimiter=', '):
+    if not caption_info:
+        return
+    captions = caption_info['caption']
+    original_captions = caption_info.get('original_caption')
+    dropped_tags_list = caption_info.get('dropped_tags')
+    caption_dropout_list = caption_info.get('caption_dropout')
+
+    lines = [f'[Caption Debug - Step {step}]']
+    for i, caption in enumerate(captions):
+        lines.append(f'  --- Batch item {i} ---')
+
+        # Check caption dropout
+        caption_dropout = False
+        if caption_dropout_list is not None:
+            caption_dropout = caption_dropout_list[i] if isinstance(caption_dropout_list, list) else caption_dropout_list
+
+        if caption_dropout:
+            lines.append(f'  Caption dropout: Yes (entire caption replaced with empty string)')
+            if original_captions is not None:
+                orig = original_captions[i] if isinstance(original_captions, list) else original_captions
+                orig_tags = [t.strip() for t in orig.split(delimiter) if t.strip()]
+                if len(orig_tags) > max_tags:
+                    lines.append(f'  Original caption ({len(orig_tags)} tags): {delimiter.join(orig_tags[:max_tags])} ... (+{len(orig_tags) - max_tags} more)')
+                else:
+                    lines.append(f'  Original caption: {orig}')
+        else:
+            # Show current caption with tag truncation
+            tags = [t.strip() for t in caption.split(delimiter) if t.strip()]
+            if len(tags) > max_tags:
+                lines.append(f'  Caption ({len(tags)} tags): {delimiter.join(tags[:max_tags])} ... (+{len(tags) - max_tags} more)')
+            else:
+                lines.append(f'  Caption: {caption}')
+
+            # Show dropped tags
+            if dropped_tags_list is not None:
+                dropped = dropped_tags_list[i] if isinstance(dropped_tags_list, list) else dropped_tags_list
+                if dropped:
+                    lines.append(f'  Tag dropout: {dropped}')
+
+    print('\n'.join(lines))
 
 
 # Need to preload all micro batches since pulling from the dataloader does IPC between the
@@ -885,6 +930,10 @@ if __name__ == '__main__':
                 if avg_lr > 0:
                     tb_writer.add_histogram(f'train/automagic_lrs', lrs, x_axis)
                     tb_writer.add_scalar(f'train/automagic_avg_lr', avg_lr, x_axis)
+
+        # Caption debug logging
+        if is_main_process() and config['log_captions_every_n_steps'] > 0 and step % config['log_captions_every_n_steps'] == 0:
+            log_caption_debug(train_dataloader.last_caption_info, step, config['log_captions_max_length'])
 
         # Display training progress
         step_elapsed = time.time() - step_start_time
