@@ -821,19 +821,21 @@ class DirectoryDataset:
                     for _ in range(count):
                         if mode == 'tags':
                             # Tags only - apply shuffle/dropout to tags
+                            # Use count=1 to produce exactly one variant per weight iteration,
+                            # preserving the mixed_weights ratio.
                             shuffled = shuffle_captions(
-                                captions, self.shuffle, self.shuffle_delimiter, prefix,
+                                captions, min(self.shuffle, 1), self.shuffle_delimiter, prefix,
                                 self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
                                 self.protected_tags,
                             )
                             mixed_captions.extend(shuffled)
                         elif mode == 'nl':
-                            # Natural language only
+                            # Natural language only - no shuffle/dropout
                             mixed_captions.append(prefix + nl_caption)
                         elif mode == 'tags_nl':
                             # Tags first, then natural language
                             shuffled = shuffle_captions(
-                                captions, self.shuffle, self.shuffle_delimiter, prefix,
+                                captions, min(self.shuffle, 1), self.shuffle_delimiter, prefix,
                                 self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
                                 self.protected_tags,
                             )
@@ -842,7 +844,7 @@ class DirectoryDataset:
                         elif mode == 'nl_tags':
                             # Natural language first, then tags
                             shuffled = shuffle_captions(
-                                captions, self.shuffle, self.shuffle_delimiter, '',
+                                captions, min(self.shuffle, 1), self.shuffle_delimiter, '',
                                 self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
                                 self.protected_tags,
                             )
