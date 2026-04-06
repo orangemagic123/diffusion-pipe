@@ -44,16 +44,66 @@ def shuffle_with_seed(l, seed=None):
     random.setstate(rng_state)
 
 
-def shuffle_captions(captions: list[str], count: int = 0, delimiter: str = ', ', caption_prefix: str = '') -> list[str]:
-    if count == 0:
+def shuffle_captions(
+    captions: list[str],
+    count: int = 0,
+    delimiter: str = ', ',
+    caption_prefix: str = '',
+    keep_tokens_separator: str = '',
+    secondary_separator: str = '',
+    tag_dropout_rate: float = 0.0,
+) -> list[str]:
+    if count == 0 and tag_dropout_rate <= 0:
         return [caption_prefix + c for c in captions]
 
-    def shuffle_caption(caption: str, delimiter: str = ", ") -> str:
-        split = caption.split(delimiter)
-        random.shuffle(split)
-        return delimiter.join(split)
+    def process_caption(caption: str) -> str:
+        # 1. Split by keep_tokens_separator into fixed and variable parts
+        fixed_part = ''
+        variable_part = caption
+        if keep_tokens_separator and keep_tokens_separator in caption:
+            parts = caption.split(keep_tokens_separator, 1)
+            fixed_part = parts[0].strip()
+            variable_part = parts[1].strip()
 
-    return [caption_prefix + shuffle_caption(caption, delimiter) for caption in captions for _ in range(count)]
+        # 2. Split variable part into raw tags by delimiter
+        raw_tags = [t.strip() for t in variable_part.split(delimiter)] if variable_part else []
+
+        # 3. Group tags using secondary_separator
+        # Tags connected by secondary_separator (e.g. "b;;;c;;;d") become a single group
+        # that shuffles and drops together.
+        tag_groups = []
+        for tag in raw_tags:
+            if not tag:
+                continue
+            if secondary_separator and secondary_separator in tag:
+                group = [t.strip() for t in tag.split(secondary_separator)]
+                tag_groups.append(group)
+            else:
+                tag_groups.append([tag])
+
+        # 4. Tag dropout - drop entire groups with probability tag_dropout_rate
+        if tag_dropout_rate > 0:
+            tag_groups = [g for g in tag_groups if random.random() >= tag_dropout_rate]
+
+        # 5. Shuffle tag groups
+        if count > 0:
+            random.shuffle(tag_groups)
+
+        # 6. Flatten groups back to individual tags
+        shuffled_tags = []
+        for group in tag_groups:
+            shuffled_tags.extend(group)
+
+        # 7. Combine fixed and variable parts
+        all_tags = []
+        if fixed_part:
+            all_tags.append(fixed_part)
+        if shuffled_tags:
+            all_tags.append(delimiter.join(shuffled_tags))
+        return delimiter.join(all_tags)
+
+    effective_count = max(count, 1)
+    return [caption_prefix + process_caption(caption) for caption in captions for _ in range(effective_count)]
 
 
 def bucket_suffix(key):
@@ -450,6 +500,9 @@ class DirectoryDataset:
         self.shuffle = directory_config.get('cache_shuffle_num', dataset_config.get('cache_shuffle_num', 0))
         self.directory_config['cache_shuffle_num'] = self.shuffle # Make accessible if it wasn't yet, for picking one out
         self.shuffle_delimiter = directory_config.get('cache_shuffle_delimiter', dataset_config.get('cache_shuffle_delimiter', ", "))
+        self.keep_tokens_separator = directory_config.get('keep_tokens_separator', dataset_config.get('keep_tokens_separator', ''))
+        self.secondary_separator = directory_config.get('secondary_separator', dataset_config.get('secondary_separator', ''))
+        self.tag_dropout_rate = directory_config.get('tag_dropout_rate', dataset_config.get('tag_dropout_rate', 0.0))
         self.path = Path(self.directory_config['path'])
         self.mask_path = Path(self.directory_config['mask_path']) if 'mask_path' in self.directory_config else None
         self.control_path = Path(self.directory_config['control_path']) if 'control_path' in self.directory_config else None
@@ -717,7 +770,10 @@ class DirectoryDataset:
                 logger.warning(f'Cound not find caption for {image_file}. Using empty caption.')
             if self.directory_config['shuffle_tags'] and self.shuffle == 0: # backwards compatibility
                 self.shuffle = 1
-            captions = shuffle_captions(captions, self.shuffle, self.shuffle_delimiter, self.directory_config['caption_prefix'])
+            captions = shuffle_captions(
+                captions, self.shuffle, self.shuffle_delimiter, self.directory_config['caption_prefix'],
+                self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
+            )
             empty_return = {'image_spec': [], 'mask_file': [], 'caption': [], 'ar_bucket': [], 'size_bucket': [], 'is_video': []}
             if self.control_path:
                 empty_return['control_file'] = []
