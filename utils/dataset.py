@@ -52,6 +52,7 @@ def shuffle_captions(
     keep_tokens_separator: str = '',
     secondary_separator: str = '',
     tag_dropout_rate: float = 0.0,
+    protected_tags: set = None,
 ) -> list[str]:
     if count == 0 and tag_dropout_rate <= 0:
         return [caption_prefix + c for c in captions]
@@ -82,8 +83,13 @@ def shuffle_captions(
                 tag_groups.append([tag])
 
         # 4. Tag dropout - drop entire groups with probability tag_dropout_rate
+        #    Groups containing any protected tag are immune to dropout.
         if tag_dropout_rate > 0:
-            tag_groups = [g for g in tag_groups if random.random() >= tag_dropout_rate]
+            tag_groups = [
+                g for g in tag_groups
+                if (protected_tags and any(t in protected_tags for t in g))
+                or random.random() >= tag_dropout_rate
+            ]
 
         # 5. Shuffle tag groups
         if count > 0:
@@ -503,6 +509,13 @@ class DirectoryDataset:
         self.keep_tokens_separator = directory_config.get('keep_tokens_separator', dataset_config.get('keep_tokens_separator', ''))
         self.secondary_separator = directory_config.get('secondary_separator', dataset_config.get('secondary_separator', ''))
         self.tag_dropout_rate = directory_config.get('tag_dropout_rate', dataset_config.get('tag_dropout_rate', 0.0))
+        protected_tags_file = directory_config.get('protected_tags_file', dataset_config.get('protected_tags_file', ''))
+        self.protected_tags = set()
+        if protected_tags_file:
+            with open(protected_tags_file) as f:
+                self.protected_tags = {line.strip() for line in f if line.strip()}
+            if self.protected_tags:
+                logger.info(f'Loaded {len(self.protected_tags)} protected tags from {protected_tags_file}')
         self.caption_mode = directory_config.get('caption_mode', None)
         self.mixed_weights = directory_config.get('mixed_weights', None)
         if self.caption_mode == 'mixed':
@@ -811,6 +824,7 @@ class DirectoryDataset:
                             shuffled = shuffle_captions(
                                 captions, self.shuffle, self.shuffle_delimiter, prefix,
                                 self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
+                                self.protected_tags,
                             )
                             mixed_captions.extend(shuffled)
                         elif mode == 'nl':
@@ -821,6 +835,7 @@ class DirectoryDataset:
                             shuffled = shuffle_captions(
                                 captions, self.shuffle, self.shuffle_delimiter, prefix,
                                 self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
+                                self.protected_tags,
                             )
                             for s in shuffled:
                                 mixed_captions.append(s + self.shuffle_delimiter + nl_caption)
@@ -829,6 +844,7 @@ class DirectoryDataset:
                             shuffled = shuffle_captions(
                                 captions, self.shuffle, self.shuffle_delimiter, '',
                                 self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
+                                self.protected_tags,
                             )
                             for s in shuffled:
                                 mixed_captions.append(prefix + nl_caption + self.shuffle_delimiter + s)
@@ -837,6 +853,7 @@ class DirectoryDataset:
                 captions = shuffle_captions(
                     captions, self.shuffle, self.shuffle_delimiter, self.directory_config['caption_prefix'],
                     self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
+                    self.protected_tags,
                 )
             empty_return = {'image_spec': [], 'mask_file': [], 'caption': [], 'ar_bucket': [], 'size_bucket': [], 'is_video': []}
             if self.control_path:

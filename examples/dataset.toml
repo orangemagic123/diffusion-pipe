@@ -46,6 +46,9 @@ frame_buckets = [1, 33]
 # Tag dropout rate. Probability of dropping each tag (or tag group) during caching. 0.0 means no dropout. Defaults to 0.0.
 # tag_dropout_rate = 0.1
 
+# Protected tags file: path to a .txt file with one tag per line. These tags are immune to tag_dropout but still get shuffled.
+# protected_tags_file = "./protected_tags.txt"
+
 # keep_tokens_separator: tags before this separator are kept fixed (no shuffle, no dropout).
 # Tags after the separator are subject to shuffle and tag dropout. The separator itself is replaced with a comma in the final caption.
 # Example: "a, b, c ||| d, e" -> "a, b, c" is fixed, "d, e" is shuffled/dropped. Result might be: "a, b, c, e, d"
