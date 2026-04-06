@@ -783,10 +783,13 @@ if __name__ == '__main__':
     steps_per_epoch = len(train_dataloader) // model_engine.gradient_accumulation_steps()
 
     scheduler_type = config.get('lr_scheduler', 'constant')
+    total_steps = config['epochs'] * steps_per_epoch
     if scheduler_type == 'constant':
         lr_scheduler = torch.optim.lr_scheduler.ConstantLR(optimizer, factor=1.0)
     elif scheduler_type == 'linear':
-        lr_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.0, total_iters=config['epochs'] * steps_per_epoch)
+        lr_scheduler = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.0, total_iters=total_steps)
+    elif scheduler_type == 'cosine':
+        lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=config.get('lr_scheduler_eta_min', 0))
     else:
         raise NotImplementedError(f'Unknown lr_scheduler: {scheduler_type}')
     if config['warmup_steps'] > 0:
