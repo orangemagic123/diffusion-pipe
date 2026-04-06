@@ -509,6 +509,7 @@ class DirectoryDataset:
         self.keep_tokens_separator = directory_config.get('keep_tokens_separator', dataset_config.get('keep_tokens_separator', ''))
         self.secondary_separator = directory_config.get('secondary_separator', dataset_config.get('secondary_separator', ''))
         self.tag_dropout_rate = directory_config.get('tag_dropout_rate', dataset_config.get('tag_dropout_rate', 0.0))
+        self.caption_dropout_rate = directory_config.get('caption_dropout_rate', dataset_config.get('caption_dropout_rate', 0.0))
         protected_tags_file = directory_config.get('protected_tags_file', dataset_config.get('protected_tags_file', ''))
         self.protected_tags = set()
         if protected_tags_file:
@@ -857,6 +858,10 @@ class DirectoryDataset:
                     self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
                     self.protected_tags,
                 )
+            # Caption dropout: replace entire caption with empty string with given probability
+            if self.caption_dropout_rate > 0 and random.random() < self.caption_dropout_rate:
+                captions = ['']
+
             empty_return = {'image_spec': [], 'mask_file': [], 'caption': [], 'ar_bucket': [], 'size_bucket': [], 'is_video': []}
             if self.control_path:
                 empty_return['control_file'] = []
