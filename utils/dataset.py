@@ -964,16 +964,18 @@ class DirectoryDataset:
                     self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
                     self.protected_tags, return_dropped_tags=True,
                 )
-            # Caption dropout: replace entire caption with empty string with given probability
+            # Caption dropout: replace entire caption with empty string with given probability.
+            # Preserve the number of variants so that all images have equal caption counts
+            # (required for epoch-based caption variant cycling).
             caption_dropout_occurred = False
             if self.caption_dropout_rate > 0 and random.random() < self.caption_dropout_rate:
-                captions = ['']
+                captions = [''] * len(captions)
                 caption_dropout_occurred = True
 
             # Convert dropped tags lists to comma-separated strings for storage
             dropped_tags_strings = [', '.join(tags) for tags in all_dropped_tags]
             if caption_dropout_occurred:
-                dropped_tags_strings = ['']
+                dropped_tags_strings = [''] * len(captions)
 
             empty_return = {'image_spec': [], 'mask_file': [], 'caption': [], 'ar_bucket': [], 'size_bucket': [], 'is_video': [],
                             'original_caption': [], 'dropped_tags': [], 'caption_dropout': []}
