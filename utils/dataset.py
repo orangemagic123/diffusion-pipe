@@ -386,6 +386,22 @@ class SizeBucketDataset:
 
         self.iteration_order = datasets.load_from_disk(str(iteration_order_cache_dir))
 
+        # Determine number of caption variants for epoch-based cycling.
+        # When multiple caption variants exist (e.g. from mixed mode or cache_shuffle_num),
+        # one epoch = one pass over unique images, and different epochs use different variants.
+        max_caption_num = max(self.iteration_order['caption_number'])
+        num_variants = max_caption_num + 1
+        if num_variants > 1 and len(self.iteration_order) % num_variants == 0:
+            self.num_caption_variants = num_variants
+            self.num_images_per_variant = len(self.iteration_order) // num_variants
+        else:
+            self.num_caption_variants = 1
+            self.num_images_per_variant = len(self.iteration_order)
+        self._current_epoch = 1
+
+    def set_epoch(self, epoch):
+        self._current_epoch = epoch
+
     def cache_text_embeddings(self, map_fn, i, regenerate_cache=False, caching_batch_size=1):
         print(f'caching text embeddings: {self.size_bucket}')
         te_dataset = _cache_text_embeddings(self.metadata_dataset, map_fn, i, self.cache_dir, regenerate_cache, caching_batch_size)
@@ -395,8 +411,13 @@ class SizeBucketDataset:
         self.text_embedding_datasets.append(te_dataset)
 
     def __getitem__(self, idx):
-        idx = idx % len(self.iteration_order)
-        entry = self.iteration_order[idx]
+        base_idx = idx % self.num_images_per_variant
+        if self.num_caption_variants > 1:
+            variant = (self._current_epoch - 1) % self.num_caption_variants
+            actual_idx = variant * self.num_images_per_variant + base_idx
+        else:
+            actual_idx = base_idx
+        entry = self.iteration_order[actual_idx]
 
         ret = self.latent_dataset[entry['latents_idx']]
 
@@ -414,7 +435,7 @@ class SizeBucketDataset:
         return ret
 
     def __len__(self):
-        return int(len(self.iteration_order) * self.num_repeats)
+        return int(self.num_images_per_variant * self.num_repeats)
 
 
 # Logical concatenation of multiple SizeBucketDataset, for the same size bucket. It returns items
@@ -468,6 +489,10 @@ class ConcatenatedBatchedDataset:
         start_idx = idx * self.global_batch_size + self.data_parallel_rank * self.batch_size
         end_idx = start_idx + self.batch_size
         return [self.datasets[i.item()][j.item()] for i, j in self.iteration_order[start_idx : end_idx]]
+
+    def set_epoch(self, epoch):
+        for ds in self.datasets:
+            ds.set_epoch(epoch)
 
     def _make_divisible_by(self, n):
         new_length = (len(self.iteration_order) // n) * n
@@ -888,26 +913,28 @@ class DirectoryDataset:
                     for _ in range(count):
                         if mode == 'tags':
                             # Tags only - apply shuffle/dropout to tags
-                            # Use count=1 to produce exactly one variant per weight iteration,
-                            # preserving the mixed_weights ratio.
                             shuffled, dropped = shuffle_captions(
-                                captions, min(self.shuffle, 1), self.shuffle_delimiter, prefix,
+                                captions, self.shuffle, self.shuffle_delimiter, prefix,
                                 self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
                                 self.protected_tags, return_dropped_tags=True,
                             )
                             mixed_captions.extend(shuffled)
                             all_dropped_tags.extend(dropped)
                         elif mode == 'nl':
-                            # Natural language with fixed part prepended
-                            if fixed_part:
-                                mixed_captions.append(prefix + fixed_part + self.shuffle_delimiter + nl_caption)
-                            else:
-                                mixed_captions.append(prefix + nl_caption)
-                            all_dropped_tags.append([])
+                            # Natural language with fixed part prepended.
+                            # Duplicate to match the number of variants produced by tag-based modes,
+                            # so that the mixed_weights ratio is preserved across epoch cycling.
+                            nl_variant_count = max(self.shuffle, 1)
+                            for _ in range(nl_variant_count):
+                                if fixed_part:
+                                    mixed_captions.append(prefix + fixed_part + self.shuffle_delimiter + nl_caption)
+                                else:
+                                    mixed_captions.append(prefix + nl_caption)
+                                all_dropped_tags.append([])
                         elif mode == 'tags_nl':
                             # Tags first, then natural language
                             shuffled, dropped = shuffle_captions(
-                                captions, min(self.shuffle, 1), self.shuffle_delimiter, prefix,
+                                captions, self.shuffle, self.shuffle_delimiter, prefix,
                                 self.keep_tokens_separator, self.secondary_separator, self.tag_dropout_rate,
                                 self.protected_tags, return_dropped_tags=True,
                             )
@@ -917,7 +944,7 @@ class DirectoryDataset:
                         elif mode == 'nl_tags':
                             # Fixed part first, then natural language, then variable tags
                             shuffled, dropped = shuffle_captions(
-                                variable_captions, min(self.shuffle, 1), self.shuffle_delimiter, '',
+                                variable_captions, self.shuffle, self.shuffle_delimiter, '',
                                 '', self.secondary_separator, self.tag_dropout_rate,
                                 self.protected_tags, return_dropped_tags=True,
                             )
@@ -1179,6 +1206,10 @@ class Dataset:
 
     def set_eval_quantile(self, quantile):
         self.eval_quantile = quantile
+
+    def set_epoch(self, epoch):
+        for bucket in self.buckets:
+            bucket.set_epoch(epoch)
 
     def __len__(self):
         assert self.post_init_called
@@ -1498,12 +1529,14 @@ class PipelineDataLoader:
         self.last_caption_info = None
         # Be careful to only create the DataLoader some bounded number of times: https://github.com/pytorch/pytorch/issues/91252
         self._create_dataloader()
+        self.dataset.set_epoch(self.epoch)
         self.data = self._pull_batches_from_dataloader()
 
     def reset(self):
         self.epoch = 1
         self.num_batches_pulled = 0
         self.next_micro_batch = None
+        self.dataset.set_epoch(self.epoch)
         self.data = self._pull_batches_from_dataloader()
 
     def set_eval_quantile(self, quantile):
@@ -1530,6 +1563,7 @@ class PipelineDataLoader:
             self.num_batches_pulled = 0
             self.next_micro_batch = None
             self.epoch += 1
+            self.dataset.set_epoch(self.epoch)
         return ret
 
     def _create_dataloader(self, skip_first_n_batches=None):
@@ -1598,7 +1632,9 @@ class PipelineDataLoader:
         max_epoch = -1
         for epoch in result:
             max_epoch = max(epoch, max_epoch)
-        self.epoch = max_epoch
+        if max_epoch != self.epoch:
+            self.epoch = max_epoch
+            self.dataset.set_epoch(self.epoch)
 
     def state_dict(self):
         return {
@@ -1609,6 +1645,7 @@ class PipelineDataLoader:
     def load_state_dict(self, state_dict):
         assert not self.iter_called
         self.epoch = state_dict['epoch']
+        self.dataset.set_epoch(self.epoch)
         # -1 because by preloading the next micro_batch, it's always going to have one more batch
         # pulled than the actual number of batches iterated by the caller.
         self.num_batches_pulled = state_dict['num_batches_pulled'] - 1
