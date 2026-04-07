@@ -921,12 +921,16 @@ class DirectoryDataset:
                             mixed_captions.extend(shuffled)
                             all_dropped_tags.extend(dropped)
                         elif mode == 'nl':
-                            # Natural language with fixed part prepended
-                            if fixed_part:
-                                mixed_captions.append(prefix + fixed_part + self.shuffle_delimiter + nl_caption)
-                            else:
-                                mixed_captions.append(prefix + nl_caption)
-                            all_dropped_tags.append([])
+                            # Natural language with fixed part prepended.
+                            # Duplicate to match the number of variants produced by tag-based modes,
+                            # so that the mixed_weights ratio is preserved across epoch cycling.
+                            nl_variant_count = max(self.shuffle, 1)
+                            for _ in range(nl_variant_count):
+                                if fixed_part:
+                                    mixed_captions.append(prefix + fixed_part + self.shuffle_delimiter + nl_caption)
+                                else:
+                                    mixed_captions.append(prefix + nl_caption)
+                                all_dropped_tags.append([])
                         elif mode == 'tags_nl':
                             # Tags first, then natural language
                             shuffled, dropped = shuffle_captions(
