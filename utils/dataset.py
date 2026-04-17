@@ -520,6 +520,11 @@ class ARBucketDataset:
     def cache_latents(self, map_fn, regenerate_cache=False, trust_cache=False, caching_batch_size=1):
         print(f'caching latents: {self.ar_frames}')
 
+        has_target_resolution = (
+            len(self.metadata_dataset) > 0
+            and 'target_resolution' in self.metadata_dataset.column_names
+        )
+
         for res in self.resolutions:
             area = res**2
             w = math.sqrt(area * self.ar_frames[0])
@@ -529,7 +534,26 @@ class ARBucketDataset:
             size_bucket = (w, h, self.ar_frames[1])
             # to make sure the directory has a unique name
             naming_size_bucket = (self.ar_frames[0],) + size_bucket
-            metadata_with_size_bucket = self.metadata_dataset.map(
+
+            if has_target_resolution:
+                res_value = round(float(res), ROUND_DECIMAL_DIGITS)
+                filtered_metadata = self.metadata_dataset.filter(
+                    lambda example, res_value=res_value: example['target_resolution'] == res_value,
+                    cache_file_name=str(self.cache_dir / f'metadata/metadata_filter_{bucket_suffix(naming_size_bucket)}.arrow'),
+                    load_from_cache_file=(not regenerate_cache and trust_cache),
+                    desc=f'Filtering metadata for resolution {res}',
+                )
+                if len(filtered_metadata) == 0:
+                    if is_main_process():
+                        print(
+                            f'No images assigned to resolution {res} for ar_frames {self.ar_frames}; '
+                            f'skipping this size bucket.'
+                        )
+                    continue
+            else:
+                filtered_metadata = self.metadata_dataset
+
+            metadata_with_size_bucket = filtered_metadata.map(
                 lambda example: {'size_bucket': size_bucket},
                 cache_file_name=str(self.cache_dir / f'metadata/metadata_{bucket_suffix(naming_size_bucket)}.arrow'),
                 load_from_cache_file=(not regenerate_cache and trust_cache),
@@ -978,6 +1002,7 @@ class DirectoryDataset:
                 dropped_tags_strings = [''] * len(captions)
 
             empty_return = {'image_spec': [], 'mask_file': [], 'caption': [], 'ar_bucket': [], 'size_bucket': [], 'is_video': [],
+                            'target_resolution': [],
                             'original_caption': [], 'dropped_tags': [], 'caption_dropout': []}
             if self.control_path:
                 empty_return['control_file'] = []
@@ -1032,12 +1057,14 @@ class DirectoryDataset:
                     print(f'video with frames={frames} is being skipped because it is too short')
                     return empty_return
                 ar_bucket = None
+                target_resolution = 0.0
             else:
                 ar_bucket = self._find_closest_ar_bucket(log_ar, frames, is_video)
                 if ar_bucket is None:
                     print(f'video with frames={frames} is being skipped because it is too short')
                     return empty_return
                 size_bucket = None
+                target_resolution = self._select_resolution_for_image(width, height)
 
             ret = {
                 'image_spec': [image_spec],
@@ -1046,6 +1073,7 @@ class DirectoryDataset:
                 'ar_bucket': [ar_bucket],
                 'size_bucket': [size_bucket],
                 'is_video': [is_video],
+                'target_resolution': [target_resolution],
                 'original_caption': [original_caption],
                 'dropped_tags': [dropped_tags_strings],
                 'caption_dropout': [caption_dropout_occurred],
@@ -1108,6 +1136,16 @@ class DirectoryDataset:
                 res = math.sqrt(res[0] * res[1])
             result.append(res)
         return result
+
+    def _select_resolution_for_image(self, width, height):
+        # Assign each image to the largest resolution R such that width*height >= R*R.
+        # Images smaller than every listed resolution fall back to the smallest one.
+        image_area = width * height
+        chosen = float(self.resolutions[0])
+        for r in self.resolutions:
+            if image_area >= r * r:
+                chosen = float(r)
+        return round(chosen, ROUND_DECIMAL_DIGITS)
 
     def get_size_bucket_datasets(self):
         if self.use_size_buckets:
